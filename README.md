@@ -92,8 +92,8 @@ sudo apt install mafft
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/Rakshitchaturvedi/slph-mvp.git
-cd slph-mvp
+git clone https://github.com/Rakshitchaturvedi/slph-mvp-fp.git
+cd slph-mvp-fp
 ```
 
 ---
