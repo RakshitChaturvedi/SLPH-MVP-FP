@@ -1,20 +1,49 @@
 /**
- * Frida Agent: agent.js (Byte-Level Execution Observer)
+ * Frida Agent: agent.js (Byte-Level Execution Observer with Taint Tracking)
  *
- * Hooks recv/recvfrom/recvmsg and uses Stalker with putCallout to observe
- * which bytes of the received buffer are accessed at runtime and which
- * offsets influence control flow (cmp/test/j* instructions).
+ * Hooks recv/recvfrom/recvmsg and uses Stalker with putCallout to:
+ *   1. Detect which bytes of the recv buffer are read
+ *   2. Track register taint — when a buffer byte is loaded into a register,
+ *      that register is "tainted" with the buffer offset
+ *   3. When cmp/test uses a tainted register, report the associated buffer
+ *      offset as a branch-influencing offset
  *
- * Event types emitted:
- *   buffer_access — a memory-read instruction accessed a byte within the recv buffer
- *   branch        — a cmp/test/j* instruction; includes buffer offset if operand is in buffer
- *   instruction   — any other memory-read instruction (backward compatible)
+ * Event types:
+ *   recv_event    — recv returned, includes buffer_size
+ *   buffer_access — memory-read instruction accessed a buffer byte (with offset)
+ *   branch        — cmp/test/j* instruction; offset is non-null when it
+ *                   references a tainted register or reads from the buffer
+ *   instruction   — any other memory-read instruction (backward compat)
  */
 'use strict';
 
 const threadStates = new Map();
 
-/* Branch-related mnemonics (x86/x64) */
+/* ── x86/x64 register normalization ── */
+const REG_NORM = {};
+(function buildRegMap() {
+    const families = [
+        [['al', 'ah', 'ax', 'eax', 'rax'], 'rax'],
+        [['bl', 'bh', 'bx', 'ebx', 'rbx'], 'rbx'],
+        [['cl', 'ch', 'cx', 'ecx', 'rcx'], 'rcx'],
+        [['dl', 'dh', 'dx', 'edx', 'rdx'], 'rdx'],
+        [['sil', 'si', 'esi', 'rsi'], 'rsi'],
+        [['dil', 'di', 'edi', 'rdi'], 'rdi'],
+        [['bpl', 'bp', 'ebp', 'rbp'], 'rbp'],
+        [['spl', 'sp', 'esp', 'rsp'], 'rsp'],
+    ];
+    for (let i = 8; i <= 15; i++) {
+        families.push([[`r${i}b`, `r${i}w`, `r${i}d`, `r${i}`], `r${i}`]);
+    }
+    for (const [aliases, canonical] of families) {
+        for (const a of aliases) REG_NORM[a] = canonical;
+    }
+})();
+
+function norm(reg) { return reg ? (REG_NORM[reg] || reg) : null; }
+
+/* ── Branch-related mnemonics ── */
+const CMP_TEST = new Set(['cmp', 'test']);
 const BRANCH_MNEMONICS = new Set([
     'cmp', 'test',
     'ja', 'jae', 'jb', 'jbe', 'jc', 'je', 'jg', 'jge', 'jl', 'jle',
@@ -25,91 +54,116 @@ const BRANCH_MNEMONICS = new Set([
     'cmova', 'cmovae', 'cmovb', 'cmovbe',
 ]);
 
-function isBranch(mnemonic) {
-    return BRANCH_MNEMONICS.has(mnemonic);
+function isBranch(mn) { return BRANCH_MNEMONICS.has(mn); }
+function isCmpTest(mn) { return CMP_TEST.has(mn); }
+function isMemoryRead(i) { return i.operands.some(o => o.type === 'mem' && o.access.includes('r')); }
+
+/* ── Helpers to extract operand info at transform (static) time ── */
+
+function getMemReadOp(instruction) {
+    for (const op of instruction.operands)
+        if (op.type === 'mem' && op.access.includes('r')) return op.value;
+    return null;
 }
 
-function isMemoryRead(instruction) {
-    return instruction.operands.some(op => op.type === 'mem' && op.access.includes('r'));
+function getWriteReg(instruction) {
+    for (const op of instruction.operands)
+        if (op.type === 'reg' && op.access.includes('w')) return norm(op.value);
+    return null;
+}
+
+function getReadRegs(instruction) {
+    const regs = [];
+    for (const op of instruction.operands)
+        if (op.type === 'reg' && op.access.includes('r')) regs.push(norm(op.value));
+    return regs;
+}
+
+/* ── Effective address computation helper ── */
+
+function computeEA(context, memOp) {
+    const baseReg = memOp.base ? norm(memOp.base) : null;
+    const indexReg = memOp.index ? norm(memOp.index) : null;
+    const scale = memOp.scale || 1;
+    const disp = memOp.disp || 0;
+
+    let ea = ptr(disp);
+    if (baseReg && context[baseReg]) ea = ea.add(context[baseReg]);
+    if (indexReg && context[indexReg]) {
+        let idx = context[indexReg];
+        /* Multiply by scale via repeated addition (scale ∈ {1,2,4,8}) */
+        for (let s = 1; s < scale; s++) idx = idx.add(context[indexReg]);
+        ea = ea.add(idx);
+    }
+    return ea;
+}
+
+function isInBuffer(ea, state) {
+    return ea.compare(state.buffer) >= 0 && ea.compare(state.buffer.add(state.size)) < 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Callout factories (called at transform time, return runtime fns)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/**
+ * Memory-read instruction callout:
+ *   - If reading from buffer → taint destReg, emit buffer_access
+ *   - If NOT from buffer     → clear destReg taint, emit instruction
+ */
+function makeMemReadCallout(memOp, destReg, mnemonic, state) {
+    return function (context) {
+        try {
+            const ea = computeEA(context, memOp);
+
+            if (isInBuffer(ea, state)) {
+                const offset = ea.sub(state.buffer).toInt32();
+                if (destReg) state.taintMap[destReg] = offset;
+                send({ type: 'instruction', payload: { type: 'buffer_access', mnemonic, offset } });
+            } else {
+                if (destReg) delete state.taintMap[destReg];
+                send({ type: 'instruction', payload: { type: 'instruction', mnemonic } });
+            }
+        } catch (e) { }
+    };
 }
 
 /**
- * Build a callout function that, at runtime, computes the effective address
- * of a memory-read operand and checks if it falls within the recv buffer.
- *
- * We extract the register names from the operand at transform time (static)
- * and read their runtime values inside the callout via CpuContext.
+ * cmp/test callout — checks both memory operand and tainted registers.
+ * Reports the buffer offset that influences the comparison.
  */
-function makeBufferCheckCallout(instruction, state) {
-    const mnemonic = instruction.mnemonic;
-    const isBranchInstr = isBranch(mnemonic);
-
-    /* Find the memory-read operand to compute effective address */
-    let memOp = null;
-    for (const op of instruction.operands) {
-        if (op.type === 'mem' && op.access.includes('r')) {
-            memOp = op.value;
-            break;
-        }
-    }
-
-    /* Extract static operand info for EA computation:
-       EA = base + index * scale + disp */
-    const baseReg = memOp && memOp.base ? memOp.base : null;
-    const indexReg = memOp && memOp.index ? memOp.index : null;
-    const scale = memOp && memOp.scale ? memOp.scale : 1;
-    const disp = memOp && memOp.disp ? memOp.disp : 0;
-
+function makeCmpTestCallout(memOp, readRegs, mnemonic, state) {
     return function (context) {
         try {
-            const bufStart = state.buffer;
-            const bufEnd = bufStart.add(state.size);
+            let offset = null;
 
-            let ea = ptr(disp);
-            if (baseReg) {
-                const baseVal = context[baseReg];
-                if (baseVal) ea = ea.add(baseVal);
-            }
-            if (indexReg) {
-                const indexVal = context[indexReg];
-                if (indexVal) ea = ea.add(ptr(indexVal).mul ? ptr(indexVal) : indexVal);
+            /* 1. Direct memory read from buffer? */
+            if (memOp) {
+                const ea = computeEA(context, memOp);
+                if (isInBuffer(ea, state)) {
+                    offset = ea.sub(state.buffer).toInt32();
+                }
             }
 
-            const inBuffer = ea.compare(bufStart) >= 0 && ea.compare(bufEnd) < 0;
-
-            if (inBuffer) {
-                const offset = ea.sub(bufStart).toInt32();
-                send({
-                    type: 'instruction',
-                    payload: {
-                        type: 'buffer_access',
-                        mnemonic: mnemonic,
-                        offset: offset
+            /* 2. Tainted register operand? */
+            if (offset === null) {
+                for (const reg of readRegs) {
+                    if (state.taintMap[reg] !== undefined) {
+                        offset = state.taintMap[reg];
+                        break;
                     }
-                });
-            } else if (isBranchInstr) {
-                send({
-                    type: 'instruction',
-                    payload: {
-                        type: 'branch',
-                        mnemonic: mnemonic,
-                        offset: null
-                    }
-                });
-            } else {
-                send({
-                    type: 'instruction',
-                    payload: {
-                        type: 'instruction',
-                        mnemonic: mnemonic
-                    }
-                });
+                }
             }
-        } catch (e) {
-            /* Swallow errors in hot path to avoid crashing Stalker */
-        }
+
+            send({ type: 'instruction', payload: { type: 'branch', mnemonic, offset } });
+        } catch (e) { }
     };
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Hook recv / recvfrom / recvmsg
+   ═══════════════════════════════════════════════════════════════════ */
 
 try {
     send({ type: 'log', payload: 'Agent script started.' });
@@ -138,8 +192,8 @@ try {
                     let state = {
                         buffer: ptr(0),
                         size: 0,
-                        isStalking: false,
-                        msghdr_ptr: null
+                        msghdr_ptr: null,
+                        taintMap: {}       /* register → buffer offset */
                     };
                     if (funcName === 'recvmsg') {
                         state.msghdr_ptr = args[1];
@@ -154,9 +208,7 @@ try {
                     const threadId = this.threadId;
                     const state = threadStates.get(threadId);
 
-                    if (bytesRead <= 0 || !state) {
-                        return;
-                    }
+                    if (bytesRead <= 0 || !state) return;
 
                     /* Resolve buffer for recvmsg */
                     if (state.msghdr_ptr) {
@@ -170,46 +222,54 @@ try {
                                         break;
                                     }
                                 }
-                            } catch (e) { /* Ignore */ }
+                            } catch (e) { }
                         }
                     }
 
-                    if (state.buffer.isNull()) {
-                        return;
-                    }
+                    if (state.buffer.isNull()) return;
 
                     state.size = bytesRead;
+                    state.taintMap = {};  /* reset taints for new recv */
 
-                    /* Log the buffer metadata so downstream knows the recv size */
                     send({
                         type: 'instruction',
-                        payload: {
-                            type: 'recv_event',
-                            buffer_size: bytesRead
-                        }
+                        payload: { type: 'recv_event', buffer_size: bytesRead }
                     });
 
                     Stalker.follow(threadId, {
                         transform: function (iterator) {
                             let instruction;
                             while ((instruction = iterator.next()) !== null) {
-                                const mnemonic = instruction.mnemonic;
+                                const mn = instruction.mnemonic;
                                 const memRead = isMemoryRead(instruction);
-                                const branch = isBranch(mnemonic);
 
-                                if (memRead) {
-                                    /* Use putCallout for runtime address resolution */
-                                    iterator.putCallout(makeBufferCheckCallout(instruction, state));
-                                } else if (branch) {
-                                    /* Branch without memory-read: log statically */
+                                if (isCmpTest(mn)) {
+                                    /* cmp / test — check both memory and taint */
+                                    const memOp = getMemReadOp(instruction);
+                                    const readRegs = getReadRegs(instruction);
+                                    iterator.putCallout(
+                                        makeCmpTestCallout(memOp, readRegs, mn, state)
+                                    );
+
+                                } else if (memRead) {
+                                    /* Non-branch memory read — check buffer, manage taint */
+                                    const memOp = getMemReadOp(instruction);
+                                    const destReg = getWriteReg(instruction);
+                                    iterator.putCallout(
+                                        makeMemReadCallout(memOp, destReg, mn, state)
+                                    );
+
+                                } else if (isBranch(mn)) {
+                                    /* Conditional jump — log statically, no offset */
                                     send({
                                         type: 'instruction',
-                                        payload: {
-                                            type: 'branch',
-                                            mnemonic: mnemonic,
-                                            offset: null
-                                        }
+                                        payload: { type: 'branch', mnemonic: mn, offset: null }
                                     });
+
+                                } else {
+                                    /* Non-memory-write clears taint for overwritten regs */
+                                    const wr = getWriteReg(instruction);
+                                    if (wr) delete state.taintMap[wr];
                                 }
 
                                 iterator.keep();
@@ -222,11 +282,11 @@ try {
     }
 
     if (hook_count > 0) {
-        send({ type: 'log', payload: `[SUCCESS] Successfully attached to ${hook_count} recv* functions.` });
+        send({ type: 'log', payload: `[SUCCESS] Attached to ${hook_count} recv* functions with taint tracking.` });
     } else {
         send({ type: 'error', payload: 'Could not find any recv* functions to hook.' });
     }
 
 } catch (error) {
-    send({ type: 'error', payload: `[FATAL ERROR] A top-level error occurred: ${error.message}` });
+    send({ type: 'error', payload: `[FATAL] ${error.message}` });
 }
