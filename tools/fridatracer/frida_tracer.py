@@ -15,6 +15,8 @@ def on_message(message, data):
         agent_message_type = payload.get('type')
         agent_payload = payload.get('payload')
         if agent_message_type == 'instruction':
+            # agent_payload is a dict with 'type', 'mnemonic', and
+            # optionally 'offset' or 'buffer_size'
             trace_data = agent_payload or {}
             if log_file:
                 log_file.write(json.dumps(trace_data) + '\n')

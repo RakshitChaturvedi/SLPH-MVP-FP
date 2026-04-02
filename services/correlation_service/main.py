@@ -88,20 +88,52 @@ def process_task(channel, method, properties, body):
         tracer_process.terminate()
         tracer_process.wait(timeout=5)
 
-        # --- Parse STABLE Trace and Create Bag-of-Words ---
+        # --- Parse Enriched Trace ---
         instruction_mnemonics = []
+        buffer_access_counts = {}   # offset -> count
+        branch_offsets = set()      # offsets that influence control flow
+        recv_sizes = []
         if trace_log_path.exists():
             with open(trace_log_path, 'r') as f:
                 for line in f:
                     try:
                         trace = json.loads(line)
+                        event_type = trace.get('type', 'instruction')
                         mnemonic = trace.get('mnemonic')
-                        if mnemonic: instruction_mnemonics.append(mnemonic)
-                    except (json.JSONDecodeError, IndexError): continue
+
+                        if mnemonic:
+                            instruction_mnemonics.append(mnemonic)
+
+                        if event_type == 'buffer_access':
+                            offset = trace.get('offset')
+                            if offset is not None:
+                                buffer_access_counts[offset] = buffer_access_counts.get(offset, 0) + 1
+
+                        elif event_type == 'branch':
+                            offset = trace.get('offset')
+                            if offset is not None:
+                                branch_offsets.add(offset)
+
+                        elif event_type == 'recv_event':
+                            buf_size = trace.get('buffer_size')
+                            if buf_size is not None:
+                                recv_sizes.append(buf_size)
+
+                    except (json.JSONDecodeError, IndexError):
+                        continue
         
-        binary_results = {"mnemonic_counts": dict(Counter(instruction_mnemonics))}
-        print(f"[+] Binary analysis complete. Found {len(instruction_mnemonics)} instructions.")
-        pprint(binary_results)
+        # Sort buffer access counts by offset; stringify keys for MongoDB
+        sorted_access = {str(k): v for k, v in sorted(buffer_access_counts.items())}
+
+        binary_results = {
+            "mnemonic_counts": dict(Counter(instruction_mnemonics)),
+            "buffer_offset_access_counts": sorted_access,
+            "branch_offsets": sorted(list(branch_offsets)),
+            "recv_buffer_sizes": recv_sizes,
+        }
+        print(f"[+] Binary analysis complete. Found {len(instruction_mnemonics)} instructions, "
+              f"{len(buffer_access_counts)} buffer offsets accessed, "
+              f"{len(branch_offsets)} branch-influencing offsets.")
         
         final_model = {"network_model": network_results, "binary_model": binary_results}
         db_collection.update_one(
