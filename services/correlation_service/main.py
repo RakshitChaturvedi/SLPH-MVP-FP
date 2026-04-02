@@ -83,7 +83,7 @@ def process_task(channel, method, properties, body):
         if not ready: raise Exception("Tracer failed to start.")
 
         client_script_path = PROJECT_ROOT / 'test_artifacts' / 'echo_client.py'
-        subprocess.run([sys.executable, str(client_script_path)], timeout=5, check=True)
+        subprocess.run([sys.executable, str(client_script_path)], timeout=100, check=True)
         
         tracer_process.terminate()
         tracer_process.wait(timeout=5)
