@@ -91,8 +91,11 @@ def process_task(channel, method, properties, body):
         # --- Parse Enriched Trace ---
         instruction_mnemonics = []
         buffer_access_counts = {}   # offset -> count
-        branch_offsets = set()      # offsets that influence control flow
+        branch_offset_counts = {}   # offset -> count (weighted by recency)
         recv_sizes = []
+        recent_offsets = []         # sliding window of last 5 buffer accesses
+        WINDOW_SIZE = 5
+
         if trace_log_path.exists():
             with open(trace_log_path, 'r') as f:
                 for line in f:
@@ -108,32 +111,37 @@ def process_task(channel, method, properties, body):
                             offset = trace.get('offset')
                             if offset is not None:
                                 buffer_access_counts[offset] = buffer_access_counts.get(offset, 0) + 1
+                                recent_offsets.append(offset)
+                                if len(recent_offsets) > WINDOW_SIZE:
+                                    recent_offsets.pop(0)
 
                         elif event_type == 'branch':
                             offset = trace.get('offset')
-                            if offset is not None:
-                                branch_offsets.add(offset)
+                            if offset is not None and offset in recent_offsets:
+                                branch_offset_counts[offset] = branch_offset_counts.get(offset, 0) + 1
 
                         elif event_type == 'recv_event':
                             buf_size = trace.get('buffer_size')
                             if buf_size is not None:
                                 recv_sizes.append(buf_size)
+                            recent_offsets.clear()  # reset window per recv
 
                     except (json.JSONDecodeError, IndexError):
                         continue
         
         # Sort buffer access counts by offset; stringify keys for MongoDB
         sorted_access = {str(k): v for k, v in sorted(buffer_access_counts.items())}
+        sorted_branch = {str(k): v for k, v in sorted(branch_offset_counts.items())}
 
         binary_results = {
             "mnemonic_counts": dict(Counter(instruction_mnemonics)),
             "buffer_offset_access_counts": sorted_access,
-            "branch_offsets": sorted(list(branch_offsets)),
+            "branch_offsets": sorted_branch,
             "recv_buffer_sizes": recv_sizes,
         }
         print(f"[+] Binary analysis complete. Found {len(instruction_mnemonics)} instructions, "
               f"{len(buffer_access_counts)} buffer offsets accessed, "
-              f"{len(branch_offsets)} branch-influencing offsets.")
+              f"{len(branch_offset_counts)} branch-influencing offsets.")
         
         final_model = {"network_model": network_results, "binary_model": binary_results}
         db_collection.update_one(

@@ -119,6 +119,11 @@ function makeMemReadCallout(memOp, destReg, mnemonic, state) {
             if (isInBuffer(ea, state)) {
                 const offset = ea.sub(state.buffer).toInt32();
                 if (destReg) state.taintMap[destReg] = offset;
+
+                /* Push to sliding window (keep last 5) */
+                state.recentOffsets.push(offset);
+                if (state.recentOffsets.length > 5) state.recentOffsets.shift();
+
                 send({ type: 'instruction', payload: { type: 'buffer_access', mnemonic, offset } });
             } else {
                 if (destReg) delete state.taintMap[destReg];
@@ -145,11 +150,13 @@ function makeCmpTestCallout(memOp, readRegs, mnemonic, state) {
                 }
             }
 
-            /* 2. Tainted register operand? */
+            /* 2. Tainted register — but ONLY if offset is in recent window */
             if (offset === null) {
                 for (const reg of readRegs) {
-                    if (state.taintMap[reg] !== undefined) {
-                        offset = state.taintMap[reg];
+                    const taintedOffset = state.taintMap[reg];
+                    if (taintedOffset !== undefined &&
+                        state.recentOffsets.indexOf(taintedOffset) !== -1) {
+                        offset = taintedOffset;
                         break;
                     }
                 }
@@ -193,7 +200,8 @@ try {
                         buffer: ptr(0),
                         size: 0,
                         msghdr_ptr: null,
-                        taintMap: {}       /* register → buffer offset */
+                        taintMap: {},          /* register → buffer offset */
+                        recentOffsets: []      /* sliding window of last 5 accessed offsets */
                     };
                     if (funcName === 'recvmsg') {
                         state.msghdr_ptr = args[1];
@@ -229,7 +237,8 @@ try {
                     if (state.buffer.isNull()) return;
 
                     state.size = bytesRead;
-                    state.taintMap = {};  /* reset taints for new recv */
+                    state.taintMap = {};      /* reset taints for new recv */
+                    state.recentOffsets = []; /* reset sliding window */
 
                     send({
                         type: 'instruction',
