@@ -4,9 +4,11 @@ import os
 import uuid
 import json
 from pathlib import Path
+from starlette.responses import FileResponse
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from minio import Minio
 from minio.error import S3Error
@@ -106,6 +108,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SLPH Ingestion Service", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
+
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
+
 # Upload Route
 @app.post("/upload")
 async def upload_artifacts(
@@ -196,3 +213,29 @@ async def upload_artifacts(
         if pcap_path.exists(): pcap_path.unlink()
         if binary_path.exists(): binary_path.unlink()
         print("[*] Cleaned up temporary files.")
+
+
+# Results Route
+@app.get("/results/{project_id}")
+async def get_results(project_id: str):
+    """Returns the analysis status and results for a given project."""
+    from bson.objectid import ObjectId
+
+    projects_collection = app_state.get("projects_collection")
+    if projects_collection is None:
+        raise HTTPException(status_code=503, detail="Database not available.")
+
+    try:
+        doc = projects_collection.find_one({"_id": ObjectId(project_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid project ID format.")
+
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    doc["_id"] = str(doc["_id"])
+    return {
+        "project_id": doc["_id"],
+        "status": doc.get("status", "unknown"),
+        "inferred_protocol_model": doc.get("inferred_protocol_model"),
+    }

@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SLPH – Protocol Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet" />
+    <style>
+        /* ── Reset & Tokens ── */
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0c0e14;
+            --surface: #14171f;
+            --surface2: #1b1f2b;
+            --border: #262b3a;
+            --text: #e2e4eb;
+            --text-dim: #8690a8;
+            --accent: #6c5ce7;
+            --accent-g: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+            --success: #00cec9;
+            --warn: #fdcb6e;
+            --danger: #e17055;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --font: 'Inter', system-ui, sans-serif;
+            --mono: 'JetBrains Mono', 'Fira Code', monospace;
+        }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 1rem 4rem;
+        }
+
+        /* ── Header ── */
+        header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        header h1 {
+            font-size: 1.85rem;
+            font-weight: 700;
+            background: var(--accent-g);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        header p {
+            color: var(--text-dim);
+            font-size: 0.92rem;
+            margin-top: 0.35rem;
+        }
+
+        /* ── Card ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: 100%;
+            max-width: 720px;
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+            transition: border-color 0.3s;
+        }
+
+        .card:hover {
+            border-color: #363d52;
+        }
+
+        .card h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card h2 .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            display: inline-block;
+        }
+
+        /* ── File Input ── */
+        .field {
+            margin-bottom: 1.1rem;
+        }
+
+        .field label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            margin-bottom: 0.4rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+
+        .file-drop {
+            position: relative;
+            border: 2px dashed var(--border);
+            border-radius: var(--radius-sm);
+            padding: 1rem;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.25s, background 0.25s;
+            background: var(--surface2);
+        }
+
+        .file-drop:hover,
+        .file-drop.dragover {
+            border-color: var(--accent);
+            background: rgba(108, 92, 231, 0.06);
+        }
+
+        .file-drop input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .file-drop .placeholder {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            pointer-events: none;
+        }
+
+        .file-drop .filename {
+            font-family: var(--mono);
+            font-size: 0.82rem;
+            color: var(--success);
+            pointer-events: none;
+            display: none;
+        }
+
+        /* ── Button ── */
+        button {
+            width: 100%;
+            padding: 0.85rem;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: var(--font);
+            font-size: 0.92rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.25s, opacity 0.25s;
+            background: var(--accent-g);
+            color: #fff;
+            margin-top: 0.6rem;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(108, 92, 231, 0.35);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* ── Status ── */
+        #status-card {
+            display: none;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            padding: 0.75rem 1rem;
+            background: var(--surface2);
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+        }
+
+        .status-row .label {
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        .status-row .value {
+            font-family: var(--mono);
+            font-size: 0.8rem;
+            word-break: break-all;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 0.2rem 0.55rem;
+            border-radius: 4px;
+            background: rgba(108, 92, 231, 0.15);
+            color: var(--accent);
+        }
+
+        .badge.complete {
+            background: rgba(0, 206, 201, 0.12);
+            color: var(--success);
+        }
+
+        .badge.error {
+            background: rgba(225, 112, 85, 0.12);
+            color: var(--danger);
+        }
+
+        /* ── Results ── */
+        #results-section {
+            display: none;
+            width: 100%;
+            max-width: 720px;
+        }
+
+        .section-title {
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-dim);
+            margin-bottom: 0.65rem;
+            padding-left: 0.15rem;
+        }
+
+        /* ── Stats Grid ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .stat-box {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-box .num {
+            font-size: 1.6rem;
+            font-weight: 700;
+            background: var(--accent-g);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat-box .lbl {
+            font-size: 0.72rem;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        /* ── Table ── */
+        .result-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .result-table th,
+        .result-table td {
+            padding: 0.55rem 0.85rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .result-table th {
+            color: var(--text-dim);
+            font-weight: 600;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--surface2);
+        }
+
+        .result-table td {
+            font-family: var(--mono);
+            font-size: 0.78rem;
+        }
+
+        .result-table tr:hover td {
+            background: rgba(108, 92, 231, 0.04);
+        }
+
+        .bar-cell {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .bar {
+            height: 6px;
+            border-radius: 3px;
+            background: var(--accent-g);
+            transition: width 0.6s ease;
+        }
+
+        /* ── Cluster Section ── */
+        .cluster-block {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .cluster-block h4 {
+            font-size: 0.82rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+
+        .cluster-block pre {
+            font-family: var(--mono);
+            font-size: 0.75rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--text-dim);
+        }
+
+        /* ── JSON fallback ── */
+        .json-output {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 1.15rem;
+            max-height: 420px;
+            overflow: auto;
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--text);
+        }
+
+        .json-output::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .json-output::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .json-output::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        /* ── Error ── */
+        .error-msg {
+            background: rgba(225, 112, 85, 0.08);
+            border: 1px solid rgba(225, 112, 85, 0.25);
+            border-radius: var(--radius-sm);
+            padding: 0.85rem 1rem;
+            font-size: 0.84rem;
+            color: var(--danger);
+            display: none;
+            margin-top: 0.75rem;
+        }
+
+        .fade-in {
+            animation: fadeIn 0.4s ease forwards;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 500px) {
+            .card {
+                padding: 1.25rem;
+            }
+
+            header h1 {
+                font-size: 1.45rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>SLPH Protocol Analyzer</h1>
+        <p>Upload a PCAP capture and a binary to infer protocol structure</p>
+    </header>
+
+    <!-- Upload Card -->
+    <div class="card" id="upload-card">
+        <h2><span class="dot"></span> Upload Artifacts</h2>
+        <form id="upload-form">
+            <div class="field">
+                <label for="pcap">PCAP File</label>
+                <div class="file-drop" id="pcap-drop">
+                    <input type="file" id="pcap" name="pcap_file" accept=".pcap,.pcapng" required />
+                    <span class="placeholder">Drop .pcap file here or click to browse</span>
+                    <span class="filename" id="pcap-name"></span>
+                </div>
+            </div>
+            <div class="field">
+                <label for="binary">Binary / Script</label>
+                <div class="file-drop" id="binary-drop">
+                    <input type="file" id="binary" name="binary_file" required />
+                    <span class="placeholder">Drop binary file here or click to browse</span>
+                    <span class="filename" id="binary-name"></span>
+                </div>
+            </div>
+            <button type="submit" id="submit-btn">Analyze</button>
+            <div class="error-msg" id="upload-error"></div>
+        </form>
+    </div>
+
+    <!-- Status Card -->
+    <div class="card fade-in" id="status-card">
+        <h2><span class="dot"></span> Analysis Status</h2>
+        <div class="status-row">
+            <div class="spinner" id="status-spinner"></div>
+            <span class="label">Project ID</span>
+            <span class="value" id="project-id">—</span>
+            <span class="badge" id="status-badge">queued</span>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="results-section" class="fade-in">
+
+        <!-- Network Analysis -->
+        <div class="card">
+            <h2><span class="dot"></span> Network Analysis</h2>
+            <div class="stats-grid" id="net-stats"></div>
+            <div id="net-payloads"></div>
+            <div id="net-clusters"></div>
+        </div>
+
+        <!-- Binary Analysis -->
+        <div class="card">
+            <h2><span class="dot"></span> Binary Analysis</h2>
+            <div class="stats-grid" id="bin-stats"></div>
+            <div id="bin-table-wrap"></div>
+        </div>
+
+        <!-- Raw JSON Fallback -->
+        <div class="card">
+            <h2><span class="dot"></span> Raw JSON Output</h2>
+            <div class="json-output" id="json-output"></div>
+        </div>
+    </div>
+
+    <script>
+        (() => {
+            /* API base URL — use same origin when served from FastAPI,
+               fall back to localhost:8000 when opened via file:// */
+            const origin = window.location.origin;
+            const API = (!origin || origin === 'null' || origin === 'file://')
+                ? 'http://localhost:8000'
+                : origin;
+            const POLL_MS = 2000;
+            const $ = (s) => document.querySelector(s);
+
+            console.log('[SLPH] API base URL:', API);
+
+            /* ── File-drop UX ── */
+            document.querySelectorAll('.file-drop').forEach((drop) => {
+                const input = drop.querySelector('input');
+                const placeholder = drop.querySelector('.placeholder');
+                const nameSpan = drop.querySelector('.filename');
+                const show = (name) => { placeholder.style.display = 'none'; nameSpan.style.display = 'inline'; nameSpan.textContent = name; };
+                input.addEventListener('change', () => { if (input.files.length) show(input.files[0].name); });
+                drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
+                drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+                drop.addEventListener('drop', (e) => {
+                    e.preventDefault(); drop.classList.remove('dragover');
+                    if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; show(e.dataTransfer.files[0].name); }
+                });
+            });
+
+            /* ── Upload ── */
+            $('#upload-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const pcap = $('#pcap').files[0];
+                const binary = $('#binary').files[0];
+                if (!pcap || !binary) return;
+
+                const btn = $('#submit-btn');
+                const errEl = $('#upload-error');
+                errEl.style.display = 'none';
+                btn.disabled = true;
+                btn.textContent = 'Uploading…';
+
+                const fd = new FormData();
+                fd.append('pcap_file', pcap);
+                fd.append('binary_file', binary);
+
+                console.log('[SLPH] Uploading files…', pcap.name, binary.name);
+
+                try {
+                    const res = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+                    console.log('[SLPH] Upload response status:', res.status);
+
+                    const data = await res.json();
+                    console.log('[SLPH] Upload response body:', data);
+
+                    if (!res.ok) {
+                        throw new Error(data.detail || res.statusText);
+                    }
+
+                    /* Show status card */
+                    $('#project-id').textContent = data.project_id;
+                    $('#status-badge').textContent = data.status;
+                    $('#status-badge').className = 'badge';
+                    $('#status-spinner').style.display = '';
+                    $('#status-card').style.display = '';
+                    $('#results-section').style.display = 'none';
+
+                    btn.textContent = 'Processing…';
+                    console.log('[SLPH] Starting poll for project:', data.project_id);
+                    pollResults(data.project_id);
+                } catch (err) {
+                    console.error('[SLPH] Upload error:', err);
+                    errEl.textContent = err.message || 'Upload failed';
+                    errEl.style.display = 'block';
+                    btn.disabled = false;
+                    btn.textContent = 'Analyze';
+                }
+            });
+
+            /* ── Polling ── */
+            let pollTimer = null;
+
+            async function fetchResults(pid) {
+                try {
+                    const res = await fetch(`${API}/results/${pid}`);
+                    console.log('[SLPH] Poll status:', res.status);
+                    if (!res.ok) return;
+
+                    const data = await res.json();
+                    console.log('[SLPH] Poll data — status:', data.status);
+
+                    const badge = $('#status-badge');
+                    badge.textContent = data.status;
+
+                    if (data.status === 'analysis_complete') {
+                        if (pollTimer) clearInterval(pollTimer);
+                        badge.classList.add('complete');
+                        $('#status-spinner').style.display = 'none';
+                        $('#submit-btn').disabled = false;
+                        $('#submit-btn').textContent = 'Analyze';
+
+                        console.log('[SLPH] Analysis complete, rendering results…');
+                        console.log('[SLPH] Model keys:', data.inferred_protocol_model ? Object.keys(data.inferred_protocol_model) : 'null');
+
+                        try {
+                            renderResults(data.inferred_protocol_model);
+                            console.log('[SLPH] Results rendered successfully');
+                        } catch (renderErr) {
+                            console.error('[SLPH] Render error:', renderErr);
+                            /* Fallback: at least show raw JSON */
+                            $('#results-section').style.display = '';
+                            $('#json-output').textContent = JSON.stringify(data.inferred_protocol_model, null, 2);
+                        }
+                    } else if (data.status && data.status.startsWith('error')) {
+                        if (pollTimer) clearInterval(pollTimer);
+                        badge.classList.add('error');
+                        $('#status-spinner').style.display = 'none';
+                        $('#submit-btn').disabled = false;
+                        $('#submit-btn').textContent = 'Analyze';
+                    }
+                } catch (err) {
+                    console.warn('[SLPH] Poll fetch error (will retry):', err.message);
+                }
+            }
+
+            function pollResults(pid) {
+                if (pollTimer) clearInterval(pollTimer);
+                /* Poll immediately once, then every POLL_MS */
+                fetchResults(pid);
+                pollTimer = setInterval(() => fetchResults(pid), POLL_MS);
+            }
+
+            /* ── Render Results ── */
+            function renderResults(model) {
+                if (!model) {
+                    console.warn('[SLPH] No model to render');
+                    return;
+                }
+                $('#results-section').style.display = '';
+
+                /* ── Network Model ── */
+                const net = model.network_model || {};
+                const payloads = net.raw_payloads || [];
+                const clusters = net.analyzed_clusters || {};
+                const clusterCount = Object.keys(clusters).length;
+
+                $('#net-stats').innerHTML = statBox(payloads.length, 'Payloads Extracted') + statBox(clusterCount, 'Clusters Analyzed');
+
+                /* Payloads table */
+                if (payloads.length) {
+                    let html = '<p class="section-title">Extracted Payloads</p>';
+                    html += '<table class="result-table"><thead><tr><th>#</th><th>Hex</th><th>Decoded String</th></tr></thead><tbody>';
+                    payloads.forEach((p, i) => {
+                        html += `<tr><td>${i + 1}</td><td>${esc(p.payload_hex || '')}</td><td>${esc(p.payload_string || '')}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    $('#net-payloads').innerHTML = html;
+                }
+
+                /* Clusters */
+                if (clusterCount) {
+                    let html = '<p class="section-title">Inferred Protocol Structures</p>';
+                    for (const [cid, info] of Object.entries(clusters)) {
+                        const msgCount = info.message_count || 0;
+                        const structure = info.inferred_structure || [];
+                        html += `<div class="cluster-block"><h4>Cluster ${esc(cid)} — ${msgCount} messages</h4><pre>${esc(JSON.stringify(structure, null, 2))}</pre></div>`;
+                    }
+                    $('#net-clusters').innerHTML = html;
+                }
+
+                /* ── Binary Model ── */
+                const bin = model.binary_model || {};
+                const mnemonics = bin.mnemonic_counts || {};
+                const entries = Object.entries(mnemonics).sort((a, b) => b[1] - a[1]);
+                const totalInstr = entries.reduce((s, e) => s + e[1], 0);
+
+                $('#bin-stats').innerHTML = statBox(totalInstr, 'Instructions Traced') + statBox(entries.length, 'Unique Mnemonics');
+
+                if (entries.length) {
+                    const maxCount = entries[0][1];
+                    let html = '<p class="section-title">Instruction Frequency</p>';
+                    html += '<table class="result-table"><thead><tr><th>Mnemonic</th><th>Count</th><th>Distribution</th></tr></thead><tbody>';
+                    entries.forEach(([mn, cnt]) => {
+                        const pct = Math.round((cnt / maxCount) * 100);
+                        html += `<tr><td>${esc(mn)}</td><td>${cnt}</td><td><div class="bar-cell"><div class="bar" style="width:${pct}px"></div></div></td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    $('#bin-table-wrap').innerHTML = html;
+                }
+
+                /* Raw JSON */
+                $('#json-output').textContent = JSON.stringify(model, null, 2);
+            }
+
+            function statBox(n, label) {
+                return `<div class="stat-box"><div class="num">${n}</div><div class="lbl">${label}</div></div>`;
+            }
+
+            function esc(s) {
+                if (s == null) return '';
+                const d = document.createElement('div');
+                d.textContent = String(s);
+                return d.innerHTML;
+            }
+        })();
+    </script>
+</body>
+
+</html>
